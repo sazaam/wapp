@@ -36,8 +36,8 @@ cd wapp
 chmod +x wapp
 ln -sf "$(pwd)/wapp" ~/.local/bin/wapp
 ```
-
-Make sure `~/.local/bin` is in your `$PATH`.
+> [!IMPORTANT]
+> Make sure `~/.local/bin` is in your `$PATH`.
 
 ## Usage
 

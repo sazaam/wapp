@@ -1,0 +1,471 @@
+#!/bin/bash
+
+# wapp: Create isolated browser apps with their own profile and no browser chrome.
+# Commands:
+#   wapp create                          Interactive wizard
+#   wapp create <name> <url> [browser]   Non-interactive
+#   wapp open <name>                     Launch a wapp
+#   wapp list                            List all wapps
+#   wapp remove <name> [--keep-data]     Remove a wapp
+#   wapp recreate <name> [url] [browser] [--keep-data]  Remove and re-create
+#   wapp help                            Show this help
+
+set -e
+
+WAPP_DATA_DIR="$HOME/.local/share/wapp"
+WAPP_ICON_DIR="$HOME/.local/share/applications/icons"
+WAPP_BIN_DIR="$HOME/.local/bin"
+WAPP_DESKTOP_DIR="$HOME/.local/share/applications"
+WAPP_FIREFOX_DIR="$HOME/.mozilla/firefox"
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+die() {
+  echo -e "\e[31m$*\e[0m" >&2
+  exit 1
+}
+
+info() {
+  echo -e "\e[32m$*\e[0m"
+}
+
+detect_browsers() {
+  local browsers=()
+  if command -v firefox &>/dev/null; then
+    browsers+=("firefox")
+  fi
+  if command -v brave-origin-nightly &>/dev/null; then
+    browsers+=("brave")
+  fi
+  if command -v chromium &>/dev/null; then
+    browsers+=("chromium")
+  fi
+  if command -v google-chrome &>/dev/null; then
+    browsers+=("chrome")
+  fi
+  echo "${browsers[@]}"
+}
+
+resolve_browser() {
+  local input="${1,,}"
+  case "$input" in
+    firefox) echo "firefox" ;;
+    brave*|brave-origin-nightly) echo "brave" ;;
+    chromium) echo "chromium" ;;
+    chrome*|google-chrome*) echo "chrome" ;;
+    *) die "Unknown browser: $1" ;;
+  esac
+}
+
+is_chromium() {
+  [[ $1 == "brave" || $1 == "chromium" || $1 == "chrome" ]]
+}
+
+browser_binary() {
+  case "$1" in
+    firefox) echo "firefox" ;;
+    brave) echo "brave-origin-nightly" ;;
+    chromium) echo "chromium" ;;
+    chrome) echo "google-chrome" ;;
+  esac
+}
+
+get_browser_choice() {
+  local browsers
+  read -ra browsers <<< "$(detect_browsers)"
+  if [[ ${#browsers[@]} -eq 0 ]]; then
+    die "No supported browsers found (firefox, brave, chromium, chrome)."
+  fi
+  if [[ ${#browsers[@]} -eq 1 ]]; then
+    echo "${browsers[0]}"
+    return
+  fi
+  echo ""
+  echo "Available browsers:"
+  local i=1
+  for b in "${browsers[@]}"; do
+    echo "  $i) $b"
+    ((i++))
+  done
+  echo ""
+  local choice
+  read -rp "Choice [1]: " choice
+  choice="${choice:-1}"
+  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#browsers[@]} )); then
+    die "Invalid choice."
+  fi
+  echo "${browsers[$((choice - 1))]}"
+}
+
+fetch_icon() {
+  local name="$1" url="$2"
+  mkdir -p "$WAPP_ICON_DIR"
+  local domain
+  domain=$(echo "$url" | sed -E 's|^https?://([^/]+).*|\1|')
+  if curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
+    "https://www.google.com/s2/favicons?domain=${domain}&sz=128" 2>/dev/null \
+    && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# ─── Firefox profile setup ───────────────────────────────────────────────────
+
+setup_firefox_profile() {
+  local app_name="$1"
+  local profile_name="wapp-${app_name}"
+  local profile_id
+  profile_id=$(printf "%08x" $RANDOM $RANDOM)
+  local profile_dir_name="${profile_name}.${profile_id}"
+  local profile_path="$WAPP_FIREFOX_DIR/$profile_dir_name"
+  local profiles_ini="$WAPP_FIREFOX_DIR/profiles.ini"
+
+  mkdir -p "$profile_path/chrome"
+
+  cat > "$profile_path/chrome/userChrome.css" << 'CSS'
+@namespace url("http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul");
+
+#TabsToolbar { visibility: collapse !important; }
+#nav-bar { visibility: collapse !important; }
+#PersonalToolbar { visibility: collapse !important; }
+CSS
+
+  cat > "$profile_path/user.js" << 'JS'
+user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
+JS
+
+  # Add to profiles.ini
+  if [[ ! -f "$profiles_ini" ]]; then
+    cat > "$profiles_ini" << INI
+[General]
+StartWithLastProfile=1
+Version=2
+INI
+  fi
+
+  local next_index=0
+  while grep -q "^\[Profile${next_index}\]" "$profiles_ini" 2>/dev/null; do
+    ((next_index++))
+  done
+
+  cat >> "$profiles_ini" << INI
+
+[Profile${next_index}]
+Name=${profile_name}
+IsRelative=1
+Path=${profile_dir_name}
+Default=0
+INI
+
+  echo "$profile_name"
+}
+
+# ─── Launch script generation ────────────────────────────────────────────────
+
+generate_launch_script() {
+  local app_name="$1" browser="$2" extra_args="$3" url="${4:-}"
+  local script_path="$WAPP_BIN_DIR/wapp-${app_name}"
+  local binary
+  binary=$(browser_binary "$browser")
+
+  cat > "$script_path" << LAUNCH
+#!/bin/bash
+exec ${binary} ${extra_args}${url:+ "${url}"}
+LAUNCH
+  chmod +x "$script_path"
+}
+
+# ─── Desktop entry generation ────────────────────────────────────────────────
+
+generate_desktop_entry() {
+  local app_name="$1" display_name="$2" icon_path="$3" wm_class="$4"
+  local desktop_file="$WAPP_DESKTOP_DIR/wapp-${app_name}.desktop"
+
+  cat > "$desktop_file" << DESKTOP
+[Desktop Entry]
+Version=1.0
+Name=${display_name}
+Comment=Isolated ${display_name} web app
+Exec=${WAPP_BIN_DIR}/wapp-${app_name}
+Terminal=false
+Type=Application
+Icon=${icon_path}
+StartupWMClass=${wm_class}
+StartupNotify=true
+DESKTOP
+
+  chmod +x "$desktop_file"
+}
+
+# ─── Commands ────────────────────────────────────────────────────────────────
+
+cmd_create() {
+  local app_name="" url="" browser="" keep_data=false interactive=true
+
+  # Parse flags
+  local args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --keep-data) keep_data=true ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  set -- "${args[@]}"
+
+  if [[ $# -ge 2 ]]; then
+    app_name="$1"
+    url="$2"
+    [[ $# -ge 3 ]] && browser="$3"
+    interactive=false
+  fi
+
+  if $interactive; then
+    echo ""
+    app_name=$(gum input --prompt "App name> " --placeholder "gmail")
+    url=$(gum input --prompt "Starting URL> " --placeholder "https://mail.google.com")
+    [[ -z "$app_name" || -z "$url" ]] && die "Name and URL are required."
+  fi
+
+  [[ -z "$app_name" ]] && die "App name is required."
+  [[ -z "$url" ]] && die "URL is required."
+
+  # Normalize URL
+  if [[ ! "$url" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*: ]]; then
+    url="https://$url"
+  fi
+
+  # Sanitize name for use as profile/desktop prefix
+  local safe_name
+  safe_name=$(echo "$app_name" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_-')
+
+  # Check for conflicts
+  [[ -f "$WAPP_BIN_DIR/wapp-${safe_name}" ]] && die "A wapp named '${safe_name}' already exists. Use 'wapp recreate' to replace it."
+
+  # Resolve browser
+  if [[ -n "$browser" ]]; then
+    browser=$(resolve_browser "$browser")
+  else
+    if $interactive; then
+      browser=$(get_browser_choice)
+    else
+      browser=$(get_browser_choice)
+    fi
+  fi
+
+  # Verify browser is installed
+  local binary
+  binary=$(browser_binary "$browser")
+  command -v "$binary" &>/dev/null || die "Browser not found: $binary"
+
+  # Create data directory
+  mkdir -p "$WAPP_DATA_DIR/$safe_name"
+
+  # Set up browser-specific isolation
+  local wm_class
+  if is_chromium "$browser"; then
+    wm_class=$(browser_binary "$browser")
+    generate_launch_script "$safe_name" "$browser" \
+      "--user-data-dir=$WAPP_DATA_DIR/$safe_name --app=$url"
+  else
+    wm_class="firefox"
+    local profile_name
+    profile_name=$(setup_firefox_profile "$safe_name")
+    generate_launch_script "$safe_name" "$browser" \
+      "-P \"${profile_name}\" -no-remote" "$url"
+  fi
+
+  # Fetch icon
+  local icon_path="$WAPP_ICON_DIR/wapp-${safe_name}.png"
+  if ! fetch_icon "$safe_name" "$url"; then
+    if $interactive; then
+      echo ""
+      local custom_icon
+      custom_icon=$(gum input --prompt "Icon path (Enter to skip)> " --placeholder "/path/to/icon.png")
+      if [[ -n "$custom_icon" && -f "$custom_icon" ]]; then
+        cp "$custom_icon" "$icon_path"
+      else
+        icon_path=""
+      fi
+    else
+      icon_path=""
+    fi
+  fi
+
+  # Generate desktop entry
+  local icon_arg="${icon_path:-application-x-executable}"
+  generate_desktop_entry "$safe_name" "$app_name" "$icon_arg" "$wm_class"
+
+  # Update desktop database
+  update-desktop-database "$WAPP_DESKTOP_DIR" 2>/dev/null || true
+
+  # Restart walker if available
+  command -v omarchy-restart-walker &>/dev/null && omarchy-restart-walker 2>/dev/null || true
+
+  echo ""
+  info "✓ Created '${app_name}' wapp"
+  echo "  Script:   ${WAPP_BIN_DIR}/wapp-${safe_name}"
+  echo "  Desktop:  ${WAPP_DESKTOP_DIR}/wapp-${safe_name}.desktop"
+  echo "  Data:     ${WAPP_DATA_DIR}/${safe_name}/"
+  [[ -n "$icon_path" ]] && echo "  Icon:     ${icon_path}"
+  echo ""
+}
+
+cmd_open() {
+  [[ $# -lt 1 ]] && die "Usage: wapp open <name>"
+  local name="$1"
+  local script="$WAPP_BIN_DIR/wapp-${name}"
+  [[ ! -f "$script" ]] && die "No wapp named '${name}'. Run 'wapp list' to see available wapps."
+  exec "$script"
+}
+
+cmd_list() {
+  local found=false
+  echo ""
+  for desktop in "$WAPP_DESKTOP_DIR"/wapp-*.desktop; do
+    [[ ! -f "$desktop" ]] && continue
+    found=true
+    local basename="${desktop##*/}"
+    local name="${basename#wapp-}"
+    name="${name%.desktop}"
+    local display_name
+    display_name=$(grep '^Name=' "$desktop" | head -1 | cut -d= -f2-)
+    local comment
+    comment=$(grep '^Comment=' "$desktop" | head -1 | cut -d= -f2-)
+    echo "  $name  ($display_name)"
+  done
+  if ! $found; then
+    echo "  No wapps created yet."
+  fi
+  echo ""
+}
+
+cmd_remove() {
+  [[ $# -lt 1 ]] && die "Usage: wapp remove <name> [--keep-data]"
+  local name="$1" keep_data=false
+
+  shift
+  for arg in "$@"; do
+    [[ "$arg" == "--keep-data" ]] && keep_data=true
+  done
+
+  local safe_name
+  safe_name=$(echo "$name" | tr ' ' '-' | tr -cd 'a-zA-Z0-9_-')
+
+  # Remove desktop entry
+  rm -f "$WAPP_DESKTOP_DIR/wapp-${safe_name}.desktop"
+
+  # Remove launch script
+  rm -f "$WAPP_BIN_DIR/wapp-${safe_name}"
+
+  # Remove icon
+  rm -f "$WAPP_ICON_DIR/wapp-${safe_name}.png"
+
+  # Remove profile data
+  if ! $keep_data; then
+    rm -rf "$WAPP_DATA_DIR/$safe_name"
+    # Remove Firefox profile
+    local profile_name="wapp-${safe_name}"
+    local profiles_ini="$WAPP_FIREFOX_DIR/profiles.ini"
+    if [[ -f "$profiles_ini" ]] && grep -q "$profile_name" "$profiles_ini"; then
+      # Find and remove the profile directory
+      for dir in "$WAPP_FIREFOX_DIR"/${profile_name}.*; do
+        [[ -d "$dir" ]] && rm -rf "$dir"
+      done
+      # Remove from profiles.ini (sed in-place)
+      local tmp_ini
+      tmp_ini=$(mktemp)
+      awk -v pname="$profile_name" '
+        /^\[Profile/ { block=$0; in_block=1; content="" }
+        in_block && /^Name=/ {
+          if ($0 ~ "Name=" pname) { skip=1; next }
+          else { skip=0 }
+        }
+        in_block && /^\[/ && !/^\[Profile/ {
+          if (!skip && content != "") print content
+          in_block=0; skip=0; content=""
+        }
+        in_block { content = content (content ? "\n" : "") $0; next }
+        { print }
+        END { if (in_block && !skip && content != "") print content }
+      ' "$profiles_ini" > "$tmp_ini"
+      mv "$tmp_ini" "$profiles_ini"
+    fi
+  fi
+
+  # Update desktop database
+  update-desktop-database "$WAPP_DESKTOP_DIR" 2>/dev/null || true
+  command -v omarchy-restart-walker &>/dev/null && omarchy-restart-walker 2>/dev/null || true
+
+  info "✓ Removed '${name}'"
+  $keep_data && echo "  Profile data preserved in ${WAPP_DATA_DIR}/${safe_name}/"
+  echo ""
+}
+
+cmd_recreate() {
+  [[ $# -lt 1 ]] && die "Usage: wapp recreate <name> [url] [browser] [--keep-data]"
+  local name="$1" keep_data=false
+
+  # Parse flags
+  local args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --keep-data) keep_data=true ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  set -- "${args[@]}"
+
+  shift  # remove name
+
+  local recreate_args=()
+  $keep_data && recreate_args+=("--keep-data")
+
+  if [[ $# -ge 2 ]]; then
+    # Non-interactive: name, url, browser
+    recreate_args+=("$name" "$1" "$2")
+  elif [[ $# -eq 1 ]]; then
+    # Non-interactive: name, url (keep same browser)
+    recreate_args+=("$name" "$1")
+  else
+    # Interactive: prompt for everything
+    echo ""
+    local url browser
+    url=$(gum input --prompt "Starting URL> " --placeholder "https://mail.google.com")
+    [[ -z "$url" ]] && die "URL is required."
+    browser=$(get_browser_choice)
+    recreate_args+=("$name" "$url" "$browser")
+  fi
+
+  cmd_remove "$name" $( $keep_data && echo "--keep-data" )
+  cmd_create "${recreate_args[@]}"
+}
+
+cmd_help() {
+  cat << 'HELP'
+wapp - Create isolated browser apps
+
+Usage:
+  wapp create                          Interactive wizard
+  wapp create <name> <url> [browser]   Non-interactive creation
+  wapp open <name>                     Launch a wapp
+  wapp list                            List all wapps
+  wapp remove <name> [--keep-data]     Remove a wapp
+  wapp recreate <name> [url] [browser] [--keep-data]
+  wapp help                            Show this help
+
+Supported browsers: firefox, brave, chromium, chrome
+HELP
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+case "${1:-help}" in
+  create)  shift; cmd_create "$@" ;;
+  open)    shift; cmd_open "$@" ;;
+  list)    shift; cmd_list "$@" ;;
+  remove)  shift; cmd_remove "$@" ;;
+  recreate) shift; cmd_recreate "$@" ;;
+  help|-h|--help) cmd_help ;;
+  *) die "Unknown command: $1. Run 'wapp help' for usage." ;;
+esac

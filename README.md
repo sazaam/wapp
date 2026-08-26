@@ -27,8 +27,11 @@ Mainstream browsers mix everything into one profile. Your Gmail session shares c
 
 ## Installation
 
+navigate to ~/user_scripts/ (or any location of your choice)
+
+
 ```bash
-git clone https://github.com/youruser/wapp.git
+git clone https://github.com/sazaam/wapp.git
 cd wapp
 chmod +x wapp
 ln -sf "$(pwd)/wapp" ~/.local/bin/wapp

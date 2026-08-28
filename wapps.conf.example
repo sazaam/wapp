@@ -1,0 +1,42 @@
+# wapps.conf.example — personal wapp configuration
+# Copy to wapps.conf and edit
+
+# ─── Wapps ───────────────────────────────────────────────────────────────────
+# Format: "name|url|browser"
+
+WAPPS=(
+  "gmail-me|https://mail.google.com|brave"
+  "naver-mail-me|https://mail.naver.com|whale"
+  "naver-maps|https://map.naver.com|whale"
+  "naver-shopping|https://shopping.naver.com|whale"
+  "translate|https://translate.google.com|brave"
+  "maps|https://maps.google.com|brave"
+  "drive|https://workspace.google.com|brave"
+)
+
+# ─── Custom icons ────────────────────────────────────────────────────────────
+# Format: "name|icon_url"
+
+CUSTOM_ICONS=(
+  "maps|https://www.google.com/images/branding/product/ico/web_maps_icon_32dp.ico"
+)
+
+# ─── Per-wapp extensions ─────────────────────────────────────────────────────
+# Installed only in that wapp's isolated profile, not globally.
+# Format: "wapp_name|extension_id|name"
+
+WAPP_EXTENSIONS=(
+  # "naver-mail-me|oplanocjcpankemphfllmlhglnloaolj|Turn Off the Lights"
+  # "naver-maps|oplanocjcpankemphfllmlhglnloaolj|Turn Off the Lights"
+  # "maps|oplanocjcpankemphfllmlhglnloaolj|Turn Off the Lights"
+)
+
+# ─── Global extensions ───────────────────────────────────────────────────────
+# Installed into the main browser profile (all windows).
+# Format: "extension-id|name"
+
+BRAVE_EXTENSIONS=(
+)
+
+WHALE_EXTENSIONS=(
+)

@@ -4,7 +4,7 @@
 # Commands:
 #   wapp create                          Interactive wizard
 #   wapp create <name> <url> [browser]   Non-interactive
-#   wapp open <name>                     Launch a wapp
+#   wapp open <name> [--full]          Launch a wapp (--full = normal browser UI)
 #   wapp list                            List all wapps
 #   wapp remove <name> [--keep-data]     Remove a wapp
 #   wapp recreate <name> [url] [browser] [--keep-data]  Remove and re-create
@@ -43,6 +43,9 @@ detect_browsers() {
   if command -v google-chrome &>/dev/null; then
     browsers+=("chrome")
   fi
+  if command -v naver-whale-stable &>/dev/null; then
+    browsers+=("whale")
+  fi
   echo "${browsers[@]}"
 }
 
@@ -53,12 +56,13 @@ resolve_browser() {
     brave*|brave-origin-nightly) echo "brave" ;;
     chromium) echo "chromium" ;;
     chrome*|google-chrome*) echo "chrome" ;;
+    whale*|naver-whale*) echo "whale" ;;
     *) die "Unknown browser: $1" ;;
   esac
 }
 
 is_chromium() {
-  [[ $1 == "brave" || $1 == "chromium" || $1 == "chrome" ]]
+  [[ $1 == "brave" || $1 == "chromium" || $1 == "chrome" || $1 == "whale" ]]
 }
 
 browser_binary() {
@@ -67,6 +71,7 @@ browser_binary() {
     brave) echo "brave-origin-nightly" ;;
     chromium) echo "chromium" ;;
     chrome) echo "google-chrome" ;;
+    whale) echo "naver-whale-stable" ;;
   esac
 }
 
@@ -100,10 +105,43 @@ get_browser_choice() {
 fetch_icon() {
   local name="$1" url="$2"
   mkdir -p "$WAPP_ICON_DIR"
-  local domain
+  local domain root
   domain=$(echo "$url" | sed -E 's|^https?://([^/]+).*|\1|')
+  root=$(echo "$domain" | sed -E 's/^[^.]+\.//')
+  # Direct site favicon
+  if curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
+    "https://${domain}/favicon.ico" 2>/dev/null \
+    && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]] \
+    && file "$WAPP_ICON_DIR/wapp-${name}.png" | grep -qiE 'image|icon'; then
+    return 0
+  fi
+  if [[ "$domain" != "$root" ]] && curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
+    "https://${root}/favicon.ico" 2>/dev/null \
+    && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]] \
+    && file "$WAPP_ICON_DIR/wapp-${name}.png" | grep -qiE 'image|icon'; then
+    return 0
+  fi
+  # Parse <link rel="icon"> from page HTML
+  local icon_url
+  icon_url=$(curl -fsSL "https://${domain}" 2>/dev/null \
+    | grep -oP 'rel="[^"]*icon[^"]*"[^>]*href="[^"]*"' \
+    | head -1 | grep -oP 'href="\K[^"]+')
+  if [[ -n "$icon_url" ]]; then
+    [[ ! "$icon_url" =~ ^https?:// ]] && icon_url="https://${domain}${icon_url}"
+    if curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" "$icon_url" 2>/dev/null \
+      && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]] \
+      && file "$WAPP_ICON_DIR/wapp-${name}.png" | grep -qiE 'image|icon'; then
+      return 0
+    fi
+  fi
+  # Google favicon service fallback
   if curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
     "https://www.google.com/s2/favicons?domain=${domain}&sz=128" 2>/dev/null \
+    && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]]; then
+    return 0
+  fi
+  if [[ "$domain" != "$root" ]] && curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
+    "https://www.google.com/s2/favicons?domain=${root}&sz=128" 2>/dev/null \
     && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]]; then
     return 0
   fi
@@ -246,11 +284,7 @@ cmd_create() {
   if [[ -n "$browser" ]]; then
     browser=$(resolve_browser "$browser")
   else
-    if $interactive; then
-      browser=$(get_browser_choice)
-    else
-      browser=$(get_browser_choice)
-    fi
+    browser=$(get_browser_choice)
   fi
 
   # Verify browser is installed
@@ -312,11 +346,27 @@ cmd_create() {
 }
 
 cmd_open() {
-  [[ $# -lt 1 ]] && die "Usage: wapp open <name>"
-  local name="$1"
+  [[ $# -lt 1 ]] && die "Usage: wapp open <name> [--full]"
+  local name="$1" full_ui=false
+
+  shift
+  for arg in "$@"; do
+    [[ "$arg" == "--full" ]] && full_ui=true
+  done
+
   local script="$WAPP_BIN_DIR/wapp-${name}"
   [[ ! -f "$script" ]] && die "No wapp named '${name}'. Run 'wapp list' to see available wapps."
-  exec "$script"
+
+  if $full_ui; then
+    local url binary exec_line
+    exec_line=$(sed -n '2p' "$script")
+    exec_line=${exec_line#exec }
+    binary=${exec_line%% *}
+    url=$(echo "$exec_line" | grep -oP '(?<=--app=)\S+')
+    exec "$binary" "--user-data-dir=$WAPP_DATA_DIR/$name" "$url"
+  else
+    exec "$script"
+  fi
 }
 
 cmd_list() {
@@ -448,13 +498,13 @@ wapp - Create isolated browser apps
 Usage:
   wapp create                          Interactive wizard
   wapp create <name> <url> [browser]   Non-interactive creation
-  wapp open <name>                     Launch a wapp
+  wapp open <name> [--full]         Launch a wapp (--full = normal browser UI)
   wapp list                            List all wapps
   wapp remove <name> [--keep-data]     Remove a wapp
   wapp recreate <name> [url] [browser] [--keep-data]
   wapp help                            Show this help
 
-Supported browsers: firefox, brave, chromium, chrome
+Supported browsers: firefox, brave, chromium, chrome, whale
 HELP
 }
 

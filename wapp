@@ -108,20 +108,16 @@ fetch_icon() {
   local domain root
   domain=$(echo "$url" | sed -E 's|^https?://([^/]+).*|\1|')
   root=$(echo "$domain" | sed -E 's/^[^.]+\.//')
-  # Direct site favicon
-  if curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
-    "https://${domain}/favicon.ico" 2>/dev/null \
-    && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]] \
-    && file "$WAPP_ICON_DIR/wapp-${name}.png" | grep -qiE 'image|icon'; then
-    return 0
-  fi
-  if [[ "$domain" != "$root" ]] && curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
-    "https://${root}/favicon.ico" 2>/dev/null \
-    && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]] \
-    && file "$WAPP_ICON_DIR/wapp-${name}.png" | grep -qiE 'image|icon'; then
-    return 0
-  fi
-  # Parse <link rel="icon"> from page HTML
+  is_image() {
+    local f="$1"
+    [[ -s "$f" ]] || return 1
+    case "$(file --mime-type "$f" 2>/dev/null)" in
+      *image/png|*image/jpeg|*image/vnd.microsoft.icon|*image/x-icon|*image/webp|*image/gif) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  # 1. Prefer the icon declared in the (sub)domain's own HTML <link rel="icon">
+  #    This is the most accurate for subdomains (e.g. map.naver.com declares its own icon).
   local icon_url
   icon_url=$(curl -fsSL "https://${domain}" 2>/dev/null \
     | grep -oP 'rel="[^"]*icon[^"]*"[^>]*href="[^"]*"' \
@@ -129,20 +125,32 @@ fetch_icon() {
   if [[ -n "$icon_url" ]]; then
     [[ ! "$icon_url" =~ ^https?:// ]] && icon_url="https://${domain}${icon_url}"
     if curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" "$icon_url" 2>/dev/null \
-      && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]] \
-      && file "$WAPP_ICON_DIR/wapp-${name}.png" | grep -qiE 'image|icon'; then
+      && is_image "$WAPP_ICON_DIR/wapp-${name}.png"; then
       return 0
     fi
   fi
-  # Google favicon service fallback
+  # 2. Direct site favicon at the (sub)domain root
   if curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
-    "https://www.google.com/s2/favicons?domain=${domain}&sz=128" 2>/dev/null \
-    && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]]; then
+    "https://${domain}/favicon.ico" 2>/dev/null \
+    && is_image "$WAPP_ICON_DIR/wapp-${name}.png"; then
     return 0
   fi
+  # 3. Try the parent/root domain's favicon (only for subdomains)
+  if [[ "$domain" != "$root" ]] && curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
+    "https://${root}/favicon.ico" 2>/dev/null \
+    && is_image "$WAPP_ICON_DIR/wapp-${name}.png"; then
+    return 0
+  fi
+  # 4. Google favicon service fallback (subdomain)
+  if curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
+    "https://www.google.com/s2/favicons?domain=${domain}&sz=128" 2>/dev/null \
+    && is_image "$WAPP_ICON_DIR/wapp-${name}.png"; then
+    return 0
+  fi
+  # 5. Google favicon service fallback (root domain)
   if [[ "$domain" != "$root" ]] && curl -fsSL -o "$WAPP_ICON_DIR/wapp-${name}.png" \
     "https://www.google.com/s2/favicons?domain=${root}&sz=128" 2>/dev/null \
-    && [[ -s "$WAPP_ICON_DIR/wapp-${name}.png" ]]; then
+    && is_image "$WAPP_ICON_DIR/wapp-${name}.png"; then
     return 0
   fi
   return 1

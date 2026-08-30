@@ -14,14 +14,14 @@ Mainstream browsers mix everything into one profile. Your Gmail session shares c
 - **App-like windows** — no tabs, no address bar, no bookmarks bar (just the web page)
 - **Desktop entries** — apps show up in your app launcher with their own icons
 - **Multi-account friendly** — run multiple accounts for the same service (e.g. `gmail-personal`, `gmail-work`)
-- **Browser-agnostic** — supports Firefox, Brave, Chromium, and Chrome
+- **Browser-agnostic** — supports Firefox, Brave, Chromium, Chrome, Whale, Edge, Vivaldi, and Opera
 - **Quick iteration** — `recreate` command for fast testing during development
 - **Clean removal** — remove apps with or without preserving profile data
 
 ## Requirements
 
 - Linux
-- One of: Firefox, Brave (Nightly), Chromium, or Chrome
+- One of: Firefox, Brave, Chromium, Chrome, Whale, Edge, Vivaldi, or Opera
 - [gum](https://github.com/charmbracelet/gum) (for interactive prompts)
 - `curl` (for fetching favicons)
 
@@ -50,7 +50,7 @@ wapp create
 
 **Non-interactive:**
 ```bash
-wapp create <name> <url> [browser]
+wapp create <name> <url> [browser]   # browser defaults to first detected
 ```
 
 Examples:
@@ -77,15 +77,18 @@ wapp remove <name> --keep-data  # removes launcher, keeps profile data
 ```
 
 ### Recreate an app
-Useful for quick iteration — removes and re-creates in one step.
+Useful for quick iteration — removes and re-creates in one step. Omitting a browser keeps the app's existing browser, and the current browser + URL are shown before anything is replaced.
 
 ```bash
+wapp recreate <name>                    # interactive (prompts for URL + browser)
+wapp recreate <name> <url>              # keep the same browser
 wapp recreate <name> <url> [browser] [--keep-data]
 ```
 
 ```bash
 wapp recreate gmail https://mail.google.com brave
 wapp recreate gmail https://mail.google.com brave --keep-data  # keep profile data
+wapp recreate gmail https://mail.google.com                     # keeps current browser
 ```
 
 ### Help
@@ -108,14 +111,20 @@ Each gets its own isolated data directory. Log into a different Google account i
 
 | Browser | Binary | Isolation Method | App Window |
 |---------|--------|-----------------|------------|
-| Firefox | `firefox` | Separate profile (`-P`) | `userChrome.css` hides toolbars |
-| Brave Nightly | `brave-origin-nightly` | Separate `--user-data-dir` | `--app` mode |
-| Chromium | `chromium` | Separate `--user-data-dir` | `--app` mode |
-| Chrome | `google-chrome` | Separate `--user-data-dir` | `--app` mode |
+| Firefox | `firefox` (or `firefox-esr`, `librewolf`, …) | Separate profile (`-P`) | `userChrome.css` hides toolbars |
+| Brave | `brave-browser`, `brave`, `brave-origin-nightly`, … | Separate `--user-data-dir` | `--app` mode |
+| Chromium | `chromium`, `chromium-browser`, `ungoogled-chromium`, … | Separate `--user-data-dir` | `--app` mode |
+| Chrome | `google-chrome`, `google-chrome-stable`, … | Separate `--user-data-dir` | `--app` mode |
+| Whale | `naver-whale-stable`, `naver-whale` | Separate `--user-data-dir` | `--app` mode |
+| Edge | `microsoft-edge`, `microsoft-edge-stable`, … | Separate `--user-data-dir` | `--app` mode |
+| Vivaldi | `vivaldi`, `vivaldi-stable` | Separate `--user-data-dir` | `--app` mode |
+| Opera | `opera`, `opera-stable` | Separate `--user-data-dir` | `--app` mode |
+
+> Browsers are auto-discovered by scanning your `$PATH` for any of these binaries. When you omit `[browser]`, wapp either keeps the app's current browser (recreate) or picks the first one it detects.
 
 ## How Isolation Works
 
-### Chromium-based (Brave, Chromium, Chrome)
+### Chromium-based (Brave, Chromium, Chrome, Whale, Edge, Vivaldi, Opera)
 
 Each app gets its own `--user-data-dir` directory:
 

@@ -30,48 +30,70 @@ info() {
 }
 
 detect_browsers() {
-  local browsers=()
-  if command -v firefox &>/dev/null; then
-    browsers+=("firefox")
-  fi
-  if command -v brave-origin-nightly &>/dev/null; then
-    browsers+=("brave")
-  fi
-  if command -v chromium &>/dev/null; then
-    browsers+=("chromium")
-  fi
-  if command -v google-chrome &>/dev/null; then
-    browsers+=("chrome")
-  fi
-  if command -v naver-whale-stable &>/dev/null; then
-    browsers+=("whale")
-  fi
+  local browsers=() fam
+  for fam in firefox brave chromium chrome whale edge vivaldi opera; do
+    if browser_binary "$fam" &>/dev/null; then
+      browsers+=("$fam")
+    fi
+  done
   echo "${browsers[@]}"
 }
 
 resolve_browser() {
   local input="${1,,}"
   case "$input" in
-    firefox) echo "firefox" ;;
-    brave*|brave-origin-nightly) echo "brave" ;;
-    chromium) echo "chromium" ;;
+    firefox|firefox-*) echo "firefox" ;;
+    brave*|brave-browser*|brave-origin*) echo "brave" ;;
+    chromium|chromium-*|ungoogled*) echo "chromium" ;;
     chrome*|google-chrome*) echo "chrome" ;;
     whale*|naver-whale*) echo "whale" ;;
+    edge*|microsoft-edge*) echo "edge" ;;
+    vivaldi*|vivaldi-stable*) echo "vivaldi" ;;
+    opera*|opera-stable*) echo "opera" ;;
     *) die "Unknown browser: $1" ;;
   esac
 }
 
 is_chromium() {
-  [[ $1 == "brave" || $1 == "chromium" || $1 == "chrome" || $1 == "whale" ]]
+  [[ $1 == "brave" || $1 == "chromium" || $1 == "chrome" || $1 == "whale" \
+    || $1 == "edge" || $1 == "vivaldi" || $1 == "opera" ]]
 }
 
 browser_binary() {
+  local candidates=()
   case "$1" in
-    firefox) echo "firefox" ;;
-    brave) echo "brave-origin-nightly" ;;
-    chromium) echo "chromium" ;;
-    chrome) echo "google-chrome" ;;
-    whale) echo "naver-whale-stable" ;;
+    firefox)  candidates=(firefox firefox-esr librewolf waterfox mozilla-firefox) ;;
+    brave)    candidates=(brave-browser brave brave-origin-nightly brave-nightly brave-browser-beta brave-browser-nightly) ;;
+    chromium) candidates=(chromium chromium-browser ungoogled-chromium ungoogled-chromium-browser) ;;
+    chrome)   candidates=(google-chrome google-chrome-stable google-chrome-beta google-chrome-unstable) ;;
+    whale)    candidates=(naver-whale-stable naver-whale) ;;
+    edge)     candidates=(microsoft-edge microsoft-edge-stable microsoft-edge-beta microsoft-edge-dev) ;;
+    vivaldi)  candidates=(vivaldi vivaldi-stable) ;;
+    opera)    candidates=(opera opera-stable) ;;
+    *) return 1 ;;
+  esac
+  local c
+  for c in "${candidates[@]}"; do
+    if command -v "$c" &>/dev/null; then
+      echo "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+family_of_binary() {
+  local bin="${1##*/}"
+  case "$bin" in
+    firefox|firefox-esr|librewolf|waterfox|mozilla-firefox) echo firefox ;;
+    brave*) echo brave ;;
+    chromium*|ungoogled*) echo chromium ;;
+    google-chrome*|chrome*) echo chrome ;;
+    naver-whale*) echo whale ;;
+    microsoft-edge*|edge*) echo edge ;;
+    vivaldi*) echo vivaldi ;;
+    opera*) echo opera ;;
+    *) echo "" ;;
   esac
 }
 
@@ -79,7 +101,7 @@ get_browser_choice() {
   local browsers
   read -ra browsers <<< "$(detect_browsers)"
   if [[ ${#browsers[@]} -eq 0 ]]; then
-    die "No supported browsers found (firefox, brave, chromium, chrome)."
+    die "No supported browsers found (firefox, brave, chromium, chrome, whale, edge, vivaldi, opera)."
   fi
   if [[ ${#browsers[@]} -eq 1 ]]; then
     echo "${browsers[0]}"
@@ -87,19 +109,41 @@ get_browser_choice() {
   fi
   echo ""
   echo "Available browsers:"
-  local i=1
+  local i=1 b
   for b in "${browsers[@]}"; do
     echo "  $i) $b"
     ((i++))
   done
   echo ""
   local choice
-  read -rp "Choice [1]: " choice
-  choice="${choice:-1}"
-  if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#browsers[@]} )); then
-    die "Invalid choice."
+  if ! read -rp "Select browser [1-${#browsers[@]}] (number or name, Enter=1): " choice; then
+    echo "${browsers[0]}"
+    return
   fi
-  echo "${browsers[$((choice - 1))]}"
+  choice="${choice:-1}"
+  choice="${choice,,}"
+  # Number in range
+  if [[ "$choice" =~ ^[0-9]+$ ]]; then
+    if (( choice < 1 || choice > ${#browsers[@]} )); then
+      die "Invalid selection '$choice'. Enter 1-${#browsers[@]} or a browser name."
+    fi
+    echo "${browsers[$((choice - 1))]}"
+    return
+  fi
+  # Exact family name
+  for b in "${browsers[@]}"; do
+    [[ "$choice" == "$b" ]] && { echo "$b"; return; }
+  done
+  # Unique prefix match
+  local matches=()
+  for b in "${browsers[@]}"; do
+    [[ "$b" == "$choice"* ]] && matches+=("$b")
+  done
+  if [[ ${#matches[@]} -eq 1 ]]; then
+    echo "${matches[0]}"
+    return
+  fi
+  die "Unknown browser '$choice'. Choose from: ${browsers[*]}"
 }
 
 fetch_icon() {
@@ -291,14 +335,16 @@ cmd_create() {
   # Resolve browser
   if [[ -n "$browser" ]]; then
     browser=$(resolve_browser "$browser")
-  else
+  elif $interactive; then
     browser=$(get_browser_choice)
+  else
+    browser=$(detect_browsers | awk '{print $1}')
   fi
+  [[ -z "$browser" ]] && die "No browser specified and none detected. Use: wapp create <name> <url> <browser>"
 
-  # Verify browser is installed
+  # Verify browser is installed and resolve its binary
   local binary
-  binary=$(browser_binary "$browser")
-  command -v "$binary" &>/dev/null || die "Browser not found: $binary"
+  binary=$(browser_binary "$browser") || die "Browser not found: $browser"
 
   # Create data directory
   mkdir -p "$WAPP_DATA_DIR/$safe_name"
@@ -479,12 +525,29 @@ cmd_recreate() {
   local recreate_args=()
   $keep_data && recreate_args+=("--keep-data")
 
+  # Show what is being replaced (from the existing launch script)
+  local script="$WAPP_BIN_DIR/wapp-${name}"
+  local current_family=""
+  if [[ -f "$script" ]]; then
+    local exec_line exec_parts current_browser current_url
+    exec_line=$(sed -n '2p' "$script")
+    exec_line=${exec_line#exec }
+    read -ra exec_parts <<< "$exec_line"
+    current_browser="${exec_parts[0]}"
+    current_family=$(family_of_binary "$current_browser")
+    current_url=$(echo "$exec_line" | grep -oP '(?<=--app=)\S+' || true)
+    [[ -z "$current_url" ]] && current_url=$(echo "$exec_line" | grep -oP 'https?://\S+' || true)
+    echo "Recreating '${name}':"
+    echo "  Current: ${current_family:-${current_browser:-unknown}}${current_url:+ · $current_url}"
+    echo ""
+  fi
+
   if [[ $# -ge 2 ]]; then
     # Non-interactive: name, url, browser
     recreate_args+=("$name" "$1" "$2")
   elif [[ $# -eq 1 ]]; then
     # Non-interactive: name, url (keep same browser)
-    recreate_args+=("$name" "$1")
+    recreate_args+=("$name" "$1" "$current_family")
   else
     # Interactive: prompt for everything
     echo ""
@@ -512,7 +575,7 @@ Usage:
   wapp recreate <name> [url] [browser] [--keep-data]
   wapp help                            Show this help
 
-Supported browsers: firefox, brave, chromium, chrome, whale
+Supported browsers: firefox, brave, chromium, chrome, whale, edge, vivaldi, opera
 HELP
 }
 
